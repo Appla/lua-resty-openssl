@@ -2025,6 +2025,14 @@ SecP256r1MLKEM768 192
             local kt2 = k2:get_key_type()
             ngx.say(kt2 and (kt2.sn == "SM2" or kt2.nid == 1172))
 
+            local wrong_curve, wrong_curve_err = pkey.new({
+                type = "SM2",
+                curve = "prime256v1",
+            })
+            ngx.say(wrong_curve == nil)
+            ngx.say(wrong_curve_err ==
+                    "pkey.new:new_key: SM2 key type requires the SM2 curve")
+
             local pem = myassert(k:to_PEM("PrivateKey"))
             local loaded = myassert(pkey.new(pem))
             local kt3 = loaded:get_key_type()
@@ -2062,6 +2070,8 @@ SecP256r1MLKEM768 192
 --- request
     GET /t
 --- response_body
+true
+true
 true
 true
 true
@@ -2157,11 +2167,38 @@ true
             -- Preserve validation errors that don't originate in OpenSSL
             local _, type_err = k:sign(msg, "sm3", nil, { distid = 123 })
             ngx.say(type_err == "pkey:sign_verify_prepare: id must be a string")
+
+            local digest = require("resty.openssl.digest")
+            local sign_digest = myassert(digest.new("sm3"))
+            myassert(sign_digest:update(msg))
+            local _, digest_sign_err = k:sign(sign_digest)
+            ngx.say(digest_sign_err ==
+                    "pkey:sign: digest instances are not supported for SM2; pass the message as a string")
+
+            local verify_digest = myassert(digest.new("sm3"))
+            myassert(verify_digest:update(msg))
+            local _, digest_verify_err = pub:verify(sig, verify_digest)
+            ngx.say(digest_verify_err ==
+                    "pkey:verify: digest instances are not supported for SM2; pass the message as a string")
+
+            -- Interoperability vector published by github.com/emmansun/gmsm.
+            local vector_pub = myassert(pkey.new(myassert(ngx.decode_base64(
+                    "MFkwEwYHKoZIzj0CAQYIKoEcz1UBgi0DQgAEg1bmQqQOvRjSm6NTL72f" ..
+                    "O77o8CfD9vOaW6L4cDafmYiYH17+VdHFzfbA7ysHCEehT3/fQnKo3wnE" ..
+                    "QvMFivlLoQ==")), { format = "DER", type = "pu" }))
+            local vector_sig = myassert(ngx.decode_base64(
+                    "MEQCIFs6eZvZTJBjEg1yhnaSIK9rD6EnAJrz6HPA6HQu3F+JAiAJeWik" ..
+                    "yLBA/VSNFFazP0cMq9hFa/6lPoqCj5L21L3Ndw=="))
+            ngx.say(myassert(vector_pub:verify(vector_sig,
+                    "ShangMi SM2 Sign Standard", "sm3")))
         }
     }
 --- request
     GET /t
 --- response_body
+true
+true
+true
 true
 true
 true

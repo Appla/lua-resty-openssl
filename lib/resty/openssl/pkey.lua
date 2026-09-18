@@ -357,6 +357,18 @@ local function generate_key(config)
   if typ == "EC" and type(config.curve) == "string" and (config.curve:upper() == "SM2" or config.curve == "1.2.156.10197.1.301") then
     typ = "SM2"
   end
+
+  if typ == "SM2" and config.curve ~= nil then
+    local curve_nid
+    if type(config.curve) == "string" then
+      curve_nid = C.OBJ_txt2nid(config.curve)
+      C.ERR_clear_error()
+    end
+    if curve_nid ~= legacy_type_nids.SM2 then
+      return nil, "SM2 key type requires the SM2 curve"
+    end
+  end
+
   local key_type, pctx
 
   if typ == "RSA" then
@@ -1078,6 +1090,9 @@ function _M:sign(digest, md_alg, padding, opts)
   local ret, err
 
   if digest_lib.istype(digest) then
+    if self.key_type == legacy_type_nids.SM2 then
+      return nil, "pkey:sign: digest instances are not supported for SM2; pass the message as a string"
+    end
     local length = ptr_of_uint()
     if C.EVP_SignFinal(digest.ctx, self.buf, length, self.ctx) ~= 1 then
       return nil, format_error("pkey:sign: EVP_SignFinal")
@@ -1090,7 +1105,12 @@ function _M:sign(digest, md_alg, padding, opts)
     end
 
     local length = ptr_of_size_t(self.buf_size)
-    if C.EVP_DigestSign(md_ctx, self.buf, length, digest, #digest) ~= 1 then
+    local code = C.EVP_DigestSign(md_ctx, self.buf, length, digest, #digest)
+    if pre_pctx ~= nil then
+      -- md_ctx borrows pre_pctx, so keep it alive through the final C call.
+      ffi_gc(pre_pctx, C.EVP_PKEY_CTX_free)
+    end
+    if code ~= 1 then
       return nil, format_error("pkey:sign: EVP_DigestSign")
     end
     ret = ffi_str(self.buf, length[0])
@@ -1125,6 +1145,9 @@ function _M:verify(signature, digest, md_alg, padding, opts)
 
   local code
   if digest_lib.istype(digest) then
+    if self.key_type == legacy_type_nids.SM2 then
+      return nil, "pkey:verify: digest instances are not supported for SM2; pass the message as a string"
+    end
     code = C.EVP_VerifyFinal(digest.ctx, signature, #signature, self.ctx)
   elseif type(digest) == "string" then
     local md_ctx, err, pre_pctx = sign_verify_prepare(self, C.EVP_DigestVerifyInit, md_alg, padding, opts)
@@ -1133,6 +1156,10 @@ function _M:verify(signature, digest, md_alg, padding, opts)
     end
 
     code = C.EVP_DigestVerify(md_ctx, signature, #signature, digest, #digest)
+    if pre_pctx ~= nil then
+      -- md_ctx borrows pre_pctx, so keep it alive through the final C call.
+      ffi_gc(pre_pctx, C.EVP_PKEY_CTX_free)
+    end
   else
     return nil, "pkey:verify: expect a digest instance or a string at #2"
   end

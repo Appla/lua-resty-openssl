@@ -1237,7 +1237,8 @@ instance or a string. Returns the signed text and error if any.
 
 When passing a [digest](#restyopenssldigest) instance as first parameter, it should not
 have been called [final()](#digestfinal); users should only use [update()](#digestupdate).
-This mode only supports RSA and EC keys.
+This mode only supports RSA and ECDSA keys. For SM2, pass the original message as a
+string so the implementation can include the distinguishing ID when calculating the digest.
 
 When passing a string as first parameter, `md_alg` parameter will specify the name
 to use when signing. When `md_alg` is undefined, for RSA and EC keys, this function does SHA256
@@ -1283,7 +1284,8 @@ This is useful for example to send the signature as JWS.
 OpenSSL versions do not consistently choose the same implicit SM2 ID. Set
 `opts.distid` explicitly on both sides when interoperating with another
 implementation. In particular, pass the matching `-sigopt distid:...` option
-to the OpenSSL CLI.
+to the OpenSSL CLI. The ID is a byte string and may contain NUL bytes. Omitting
+`opts.distid` uses the default above; `distid = ""` explicitly selects an empty ID.
 
 Upstream OpenSSL 1.1.1k and earlier are affected by the SM2 decryption buffer
 overflow described in [CVE-2021-3711](https://www.openssl.org/news/secadv/20210824.txt).
@@ -1324,7 +1326,8 @@ with OpenSSL 1.1.1 or lower.
 
 When passing [digest](#restyopenssldigest) instances as second parameter, it should not
 have been called [final()](#digestfinal); users should only use [update()](#digestupdate).
-This mode only supports RSA and EC keys.
+This mode only supports RSA and ECDSA keys. For SM2, pass the original message as a
+string so the implementation can include the distinguishing ID when calculating the digest.
 
 When passing a string as second parameter, `md_alg` parameter will specify the name
 to use when verifying. When `md_alg` is undefined, for RSA and EC keys, this function does SHA256
