@@ -15,8 +15,11 @@ ffi.cdef [[
   DH *EVP_PKEY_get0_DH(EVP_PKEY *pkey);
 
   int EVP_PKEY_assign(EVP_PKEY *pkey, int type, void *key);
+  void *EVP_PKEY_get0(const EVP_PKEY *pkey);
   // openssl < 3.0
+  int EVP_PKEY_id(const EVP_PKEY *pkey);
   int EVP_PKEY_base_id(const EVP_PKEY *pkey);
+  int EVP_PKEY_set_alias_type(EVP_PKEY *pkey, int type);
   int EVP_PKEY_size(const EVP_PKEY *pkey);
 
   EVP_PKEY_CTX *EVP_PKEY_CTX_new(EVP_PKEY *pkey, ENGINE *e);
@@ -119,6 +122,8 @@ if OPENSSL_3_UP then
                                           const char *mdprops);
 
     int EVP_PKEY_CTX_set_dh_paramgen_prime_len(EVP_PKEY_CTX *ctx, int pbits);
+
+    int EVP_PKEY_CTX_set1_id(EVP_PKEY_CTX *ctx, const void *id, int len);
 
     const OSSL_PROVIDER *EVP_PKEY_get0_provider(const EVP_PKEY *key);
     // const OSSL_PROVIDER *EVP_PKEY_CTX_get0_provider(const EVP_PKEY_CTX *ctx);
@@ -268,6 +273,25 @@ else
                               evp.EVP_PKEY_OP_CRYPT,
                               evp.EVP_PKEY_CTRL_RSA_OAEP_MD,
                               0, ffi.cast("void *", md))
+  end
+end
+
+if OPENSSL_3_UP then
+  _M.EVP_PKEY_CTX_set1_id = function(pctx, id)
+    if type(id) ~= "string" then
+      return -1, "id must be a string"
+    end
+    return C.EVP_PKEY_CTX_set1_id(pctx, id, #id)
+  end
+else
+  _M.EVP_PKEY_CTRL_SET1_ID = 4107
+  _M.EVP_PKEY_CTX_set1_id = function(pctx, id)
+    if type(id) ~= "string" then
+      return -1, "id must be a string"
+    end
+    return C.EVP_PKEY_CTX_ctrl(pctx, -1, -1,
+                               _M.EVP_PKEY_CTRL_SET1_ID, #id,
+                               ffi.cast("void *", id))
   end
 end
 

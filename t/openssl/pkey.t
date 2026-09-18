@@ -2006,3 +2006,115 @@ X25519MLKEM768 192
 SecP256r1MLKEM768 192
 --- no_error_log
 [error]
+
+
+
+=== TEST 56: SM2: keygen, PEM reload, and type detection
+--- http_config eval: $::HttpConfig
+--- config
+    location =/t {
+        content_by_lua_block {
+            local pkey = require("resty.openssl.pkey")
+            local k = myassert(pkey.new({ type = "SM2" }))
+            local kt = k:get_key_type()
+            ngx.say(kt and (kt.sn == "SM2" or kt.nid == 1172))
+
+            local k2 = myassert(pkey.new({ type = "EC", curve = "SM2" }))
+            local kt2 = k2:get_key_type()
+            ngx.say(kt2 and (kt2.sn == "SM2" or kt2.nid == 1172))
+
+            local pem = myassert(k:to_PEM("PrivateKey"))
+            local loaded = myassert(pkey.new(pem))
+            local kt3 = loaded:get_key_type()
+            ngx.say(kt3 and (kt3.sn == "SM2" or kt3.nid == 1172))
+        }
+    }
+--- request
+    GET /t
+--- response_body
+true
+true
+true
+--- no_error_log
+[error]
+
+
+
+=== TEST 57: SM2: asymmetric encrypt and decrypt (dynamic buffer)
+--- http_config eval: $::HttpConfig
+--- config
+    location =/t {
+        content_by_lua_block {
+            local pkey = require("resty.openssl.pkey")
+            local k = myassert(pkey.new({ type = "SM2" }))
+            local pub_pem = myassert(k:to_PEM("PublicKey"))
+            local pub = myassert(pkey.new(pub_pem))
+
+            local msg = string.rep("SM2-Dynamic-Buffer-Allocation-1234567890-", 3)
+            local ct = myassert(pub:encrypt(msg))
+            local pt = myassert(k:decrypt(ct))
+            ngx.say(pt == msg)
+        }
+    }
+--- request
+    GET /t
+--- response_body
+true
+--- no_error_log
+[error]
+
+
+
+=== TEST 58: SM2: sign and verify with default and custom distid
+--- http_config eval: $::HttpConfig
+--- config
+    location =/t {
+        content_by_lua_block {
+            local pkey = require("resty.openssl.pkey")
+            local k = myassert(pkey.new({ type = "SM2" }))
+            local pub_pem = myassert(k:to_PEM("PublicKey"))
+            local pub = myassert(pkey.new(pub_pem))
+
+            local msg = "Test message for SM2 signature"
+
+            -- Default distid
+            local sig = myassert(k:sign(msg, "sm3"))
+            local ok = myassert(pub:verify(sig, msg, "sm3"))
+            ngx.say(ok == true)
+            local ok_empty = myassert(pub:verify(sig, msg, "sm3", nil, { distid = "" }))
+            ngx.say(ok_empty == true)
+
+            -- Custom distid
+            local custom_id = "user_account_12345"
+            local sig_custom = myassert(k:sign(msg, "sm3", nil, { distid = custom_id }))
+            local ok_custom = myassert(pub:verify(sig_custom, msg, "sm3", nil, { distid = custom_id }))
+            ngx.say(ok_custom == true)
+
+            -- Wrong distid must fail
+            local ok_wrong = pub:verify(sig_custom, msg, "sm3", nil, { distid = "wrong_id" })
+            ngx.say(not ok_wrong)
+
+            -- IDs are octet strings and may contain NUL bytes
+            local binary_id = "user\0account"
+            local sig_binary = myassert(k:sign(msg, "sm3", nil, { distid = binary_id }))
+            local ok_binary = myassert(pub:verify(sig_binary, msg, "sm3", nil, { distid = binary_id }))
+            ngx.say(ok_binary == true)
+
+            -- Array-style controls use the same length-aware path
+            local array_id = "alice@example.com"
+            local sig_array = myassert(k:sign(msg, "sm3", nil, { "distid:" .. array_id }))
+            local ok_array = myassert(pub:verify(sig_array, msg, "sm3", nil, { "distid:" .. array_id }))
+            ngx.say(ok_array == true)
+        }
+    }
+--- request
+    GET /t
+--- response_body
+true
+true
+true
+true
+true
+true
+--- no_error_log
+[error]
