@@ -1437,7 +1437,7 @@ true
 true
 truenil
 false.+
-nilpkey:sign: ecdsa.sig_raw2der: invalid signature length, expect 64 but got \\d+
+nilpkey:verify: ecdsa.sig_raw2der: invalid signature length, expect 64 but got \\d+
 "
 --- no_error_log
 [error]
@@ -2027,11 +2027,29 @@ SecP256r1MLKEM768 192
             local loaded = myassert(pkey.new(pem))
             local kt3 = loaded:get_key_type()
             ngx.say(kt3 and (kt3.sn == "SM2" or kt3.nid == 1172))
+
+            local pub_pem = myassert(k:to_PEM("PublicKey"))
+            local pub = myassert(pkey.new(pub_pem))
+            local pub_params = myassert(pub:get_parameters())
+            local private_params = myassert(k:get_parameters())
+            local bn = require("resty.openssl.bn")
+            ngx.say(bn.istype(pub_params.public))
+            ngx.say(pub_params.group == 1172)
+            ngx.say(pub_params.public == private_params.public and
+                    pub_params.x == private_params.x and
+                    pub_params.y == private_params.y)
+            ngx.say(not myassert(pub:is_private()))
+            ngx.say(myassert(k:is_private()))
         }
     }
 --- request
     GET /t
 --- response_body
+true
+true
+true
+true
+true
 true
 true
 true
@@ -2076,12 +2094,20 @@ true
             local pub = myassert(pkey.new(pub_pem))
 
             local msg = "Test message for SM2 signature"
+            local gmt_id = "1234567812345678"
 
-            -- Default distid
+            -- Default distid is GM/T 0009-2012
             local sig = myassert(k:sign(msg, "sm3"))
             local ok = myassert(pub:verify(sig, msg, "sm3"))
             ngx.say(ok == true)
-            local ok_empty = myassert(pub:verify(sig, msg, "sm3", nil, { distid = "" }))
+            local ok_gmt = myassert(pub:verify(sig, msg, "sm3", nil, { distid = gmt_id }))
+            ngx.say(ok_gmt == true)
+            local ok_empty_mismatch = pub:verify(sig, msg, "sm3", nil, { distid = "" })
+            ngx.say(not ok_empty_mismatch)
+
+            -- Explicit empty distid is an opt-in, not the default
+            local sig_empty = myassert(k:sign(msg, "sm3", nil, { distid = "" }))
+            local ok_empty = myassert(pub:verify(sig_empty, msg, "sm3", nil, { distid = "" }))
             ngx.say(ok_empty == true)
 
             -- Custom distid
@@ -2113,6 +2139,42 @@ true
 true
 true
 true
+true
+true
+true
+true
+true
+--- no_error_log
+[error]
+
+
+
+=== TEST 59: SM2: ecdsa_use_raw sign and verify with public key
+--- http_config eval: $::HttpConfig
+--- config
+    location =/t {
+        content_by_lua_block {
+            local pkey = require("resty.openssl.pkey")
+            local k = myassert(pkey.new({ type = "SM2" }))
+            local pub_pem = myassert(k:to_PEM("PublicKey"))
+            local pub = myassert(pkey.new(pub_pem))
+
+            local msg = "Test message for SM2 raw signature"
+            local opts = { ecdsa_use_raw = true }
+
+            local raw = myassert(k:sign(msg, "sm3", nil, opts))
+            ngx.say(#raw == 64)
+            local ok = myassert(pub:verify(raw, msg, "sm3", nil, opts))
+            ngx.say(ok == true)
+
+            local der = myassert(k:sign(msg, "sm3"))
+            local ok_der_as_raw = pub:verify(der, msg, "sm3", nil, opts)
+            ngx.say(not ok_der_as_raw)
+        }
+    }
+--- request
+    GET /t
+--- response_body
 true
 true
 true

@@ -39,7 +39,9 @@ local ptr_of_int = ctypes.ptr_of_int
 local null = ctypes.null
 local load_pem_args = { null, null, null }
 local load_der_args = { null }
-local SM2_DEFAULT_DISTID = ""
+-- Library default from GM/T 0009-2012. Other implementations may use a
+-- different implicit ID, so callers should set distid for interoperability.
+local SM2_DEFAULT_DISTID = "1234567812345678"
 
 -- Traditional key types that don't use the raw public/private key API.
 local legacy_type_nids = {
@@ -70,7 +72,13 @@ if legacy_type_nids.SM2 ~= 0 then
     if ec ~= nil then
       return ec
     end
-    return ffi_cast("EC_KEY*", C.EVP_PKEY_get0(ctx))
+    C.ERR_clear_error()
+    local p = C.EVP_PKEY_get0(ctx)
+    if p ~= nil then
+      return ffi_cast("EC_KEY*", p)
+    end
+    C.ERR_clear_error()
+    return nil
   end
 end
 
@@ -272,14 +280,8 @@ local function generate_param(key_type, config)
 
   if key_type == evp_macro.EVP_PKEY_EC then
     local curve = config.curve or 'prime192v1'
-    local nid = C.OBJ_sn2nid(curve)
-    if nid == 0 then
-      nid = C.OBJ_ln2nid(curve)
-    end
-    if nid == 0 then
-      nid = C.OBJ_txt2nid(curve)
-      C.ERR_clear_error()
-    end
+    local nid = C.OBJ_txt2nid(curve)
+    C.ERR_clear_error()
     if nid == 0 then
       return nil, "unknown curve " .. curve
     end
@@ -771,6 +773,9 @@ function _M:get_parameters()
     end
     local key = getter(self.ctx)
     if key == nil then
+      if OPENSSL_3_UP and self.key_type == legacy_type_nids.SM2 then
+        return ec_lib.get_provider_parameters(self.ctx)
+      end
       return nil, format_error("EVP_PKEY_get0_{key}")
     end
 
@@ -794,6 +799,9 @@ function _M:set_parameters(opts)
     end
     local key = getter(self.ctx)
     if key == nil then
+      if OPENSSL_3_UP and self.key_type == legacy_type_nids.SM2 then
+        return nil, "pkey:set_parameters: cannot extract EC_KEY from SM2 key"
+      end
       return nil, format_error("EVP_PKEY_get0_{key}")
     end
 
@@ -1080,9 +1088,13 @@ function _M:sign(digest, md_alg, padding, opts)
   end
 
   if (self.key_type == evp_macro.EVP_PKEY_EC or self.key_type == legacy_type_nids.SM2) and opts and opts.ecdsa_use_raw then
-    local ec_key = get_pkey_key[self.key_type](self.ctx)
-
-    ret, err = ecdsa_util.sig_der2raw(ret, ec_key)
+    local bits
+    if OPENSSL_3_UP then
+      bits = C.EVP_PKEY_get_bits(self.ctx)
+    else
+      bits = C.EVP_PKEY_bits(self.ctx)
+    end
+    ret, err = ecdsa_util.sig_der2raw(ret, nil, bits)
     if err then
       return nil, "pkey:sign: ecdsa.sig_der2raw: " .. err
     end
@@ -1098,11 +1110,15 @@ function _M:verify(signature, digest, md_alg, padding, opts)
   local err
 
   if (self.key_type == evp_macro.EVP_PKEY_EC or self.key_type == legacy_type_nids.SM2) and opts and opts.ecdsa_use_raw then
-    local ec_key = get_pkey_key[self.key_type](self.ctx)
-
-    signature, err = ecdsa_util.sig_raw2der(signature, ec_key)
+    local bits
+    if OPENSSL_3_UP then
+      bits = C.EVP_PKEY_get_bits(self.ctx)
+    else
+      bits = C.EVP_PKEY_bits(self.ctx)
+    end
+    signature, err = ecdsa_util.sig_raw2der(signature, nil, bits)
     if err then
-      return nil, "pkey:sign: ecdsa.sig_raw2der: " .. err
+      return nil, "pkey:verify: ecdsa.sig_raw2der: " .. err
     end
   end
 

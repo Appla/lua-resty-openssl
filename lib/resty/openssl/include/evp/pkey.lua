@@ -16,10 +16,7 @@ ffi.cdef [[
 
   int EVP_PKEY_assign(EVP_PKEY *pkey, int type, void *key);
   void *EVP_PKEY_get0(const EVP_PKEY *pkey);
-  // openssl < 3.0
-  int EVP_PKEY_id(const EVP_PKEY *pkey);
   int EVP_PKEY_base_id(const EVP_PKEY *pkey);
-  int EVP_PKEY_set_alias_type(EVP_PKEY *pkey, int type);
   int EVP_PKEY_size(const EVP_PKEY *pkey);
 
   EVP_PKEY_CTX *EVP_PKEY_CTX_new(EVP_PKEY *pkey, ENGINE *e);
@@ -103,10 +100,17 @@ if OPENSSL_3_UP then
 
     const char *EVP_PKEY_get0_type_name(const EVP_PKEY *key);
     int EVP_PKEY_get_size(const EVP_PKEY *pkey);
+    int EVP_PKEY_get_bits(const EVP_PKEY *pkey);
     int EVP_PKEY_get_octet_string_param(const EVP_PKEY *pkey,
                                         const char *key_name,
                                         unsigned char *buf, size_t bsize,
                                         size_t *out_len);
+    int EVP_PKEY_get_utf8_string_param(const EVP_PKEY *pkey,
+                                       const char *key_name,
+                                       char *str, size_t max_buf_sz,
+                                       size_t *out_len);
+    int EVP_PKEY_get_bn_param(const EVP_PKEY *pkey, const char *key_name,
+                              BIGNUM **bn);
 
     int EVP_PKEY_CTX_set_ec_paramgen_curve_nid(EVP_PKEY_CTX *ctx, int nid);
     int EVP_PKEY_CTX_set_ec_param_enc(EVP_PKEY_CTX *ctx, int param_enc);
@@ -200,7 +204,19 @@ if OPENSSL_3_UP then
     return C.EVP_PKEY_CTX_set_rsa_oaep_md_name(pctx, name, props)
   end
 
+  _M.EVP_PKEY_CTX_set1_id = function(pctx, id)
+    if type(id) ~= "string" then
+      return -1, "id must be a string"
+    end
+    return C.EVP_PKEY_CTX_set1_id(pctx, id, #id)
+  end
+
 else
+  ffi.cdef [[
+    int EVP_PKEY_set_alias_type(EVP_PKEY *pkey, int type);
+    int EVP_PKEY_bits(const EVP_PKEY *pkey);
+  ]]
+
   _M.EVP_PKEY_CTX_set_ec_paramgen_curve_nid = function(pctx, nid)
     return C.EVP_PKEY_CTX_ctrl(pctx,
                                 evp.EVP_PKEY_EC,
@@ -274,16 +290,7 @@ else
                               evp.EVP_PKEY_CTRL_RSA_OAEP_MD,
                               0, ffi.cast("void *", md))
   end
-end
 
-if OPENSSL_3_UP then
-  _M.EVP_PKEY_CTX_set1_id = function(pctx, id)
-    if type(id) ~= "string" then
-      return -1, "id must be a string"
-    end
-    return C.EVP_PKEY_CTX_set1_id(pctx, id, #id)
-  end
-else
   _M.EVP_PKEY_CTRL_SET1_ID = 4107
   _M.EVP_PKEY_CTX_set1_id = function(pctx, id)
     if type(id) ~= "string" then

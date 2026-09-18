@@ -26,25 +26,35 @@ SEQUENCE {
   The binary form is typically 64 bytes.
 ]]
 
-local function group_size(ec_key)
+local function group_size(ec_key, bits)
+  if bits ~= nil then
+    if type(bits) ~= "number" or bits <= 0 then
+      return nil, "invalid EC group bits"
+    end
+    return ceil(bits / 8)
+  end
+  if ec_key == nil then
+    return nil, "ec_key is required"
+  end
+
   local group = C.EC_KEY_get0_group(ec_key)
   if group == nil then
-    assert("failed to get EC group", 2)
+    return nil, "failed to get EC group"
   end
 
   local sz = C.EC_GROUP_order_bits(group)
   if sz <= 0 then
-    assert("failed to get EC group order bits", 2)
+    return nil, "failed to get EC group order bits"
   end
 
   return ceil(sz / 8)
 end
 
-_M.sig_der2raw = function(der, ec_key)
-  if ec_key == nil then
-    error("ec_key is required", 2)
+_M.sig_der2raw = function(der, ec_key, bits)
+  local psize, err = group_size(ec_key, bits)
+  if not psize then
+    return nil, err
   end
-  local psize = group_size(ec_key)
 
   local buf = ffi.new("const unsigned char*", der)
   local buf_ptr = ffi.new("const unsigned char*[1]", buf)
@@ -83,12 +93,11 @@ _M.sig_der2raw = function(der, ec_key)
   return rbin .. sbin
 end
 
-_M.sig_raw2der = function(bin, ec_key)
-  if ec_key == nil then
-    error("ec_key is required", 2)
+_M.sig_raw2der = function(bin, ec_key, bits)
+  local psize, err = group_size(ec_key, bits)
+  if not psize then
+    return nil, err
   end
-
-  local psize = group_size(ec_key)
 
   if #bin ~= psize * 2 then
     return nil, "invalid signature length, expect " .. (psize * 2) .. " but got " .. #bin
