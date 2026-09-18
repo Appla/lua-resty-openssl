@@ -1276,8 +1276,14 @@ This is useful for example to send the signature as JWS.
   pss_saltlen, -- For PSS mode only this option specifies the salt length.
   mgf1_md, -- For PSS and OAEP padding sets the MGF1 digest. If the MGF1 digest is not explicitly set in PSS mode then the signing digest is used.
   oaep_md, -- The digest used for the OAEP hash function. If not explicitly set then SHA1 is used.
+  distid, -- The SM2 distinguishing ID. Defaults to the GM/T 0009-2012 value "1234567812345678".
 }
 ```
+
+OpenSSL versions do not consistently choose the same implicit SM2 ID. Set
+`opts.distid` explicitly on both sides when interoperating with another
+implementation. In particular, pass the matching `-sigopt distid:...` option
+to the OpenSSL CLI.
 
 It's also possible to pass raw pkeyopt control strings as used in the `pkeyutl` CLI program. This lets users pass in options that
 are not explicitly supported as parameters above.

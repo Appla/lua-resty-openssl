@@ -39,6 +39,9 @@ local ptr_of_int = ctypes.ptr_of_int
 local null = ctypes.null
 local load_pem_args = { null, null, null }
 local load_der_args = { null }
+-- Library default from GM/T 0009-2012. Other implementations may use a
+-- different implicit ID, so callers should set distid for interoperability.
+local SM2_DEFAULT_DISTID = "1234567812345678"
 
 -- Traditional key types that don't use the raw public/private key API.
 local legacy_type_nids = {
@@ -63,6 +66,21 @@ local get_pkey_key = {
   [evp_macro.EVP_PKEY_EC] = function(ctx) return C.EVP_PKEY_get0_EC_KEY(ctx) end,
   [evp_macro.EVP_PKEY_DH]  = function(ctx) return C.EVP_PKEY_get0_DH(ctx) end
 }
+if legacy_type_nids.SM2 ~= 0 then
+  get_pkey_key[legacy_type_nids.SM2] = function(ctx)
+    local ec = C.EVP_PKEY_get0_EC_KEY(ctx)
+    if ec ~= nil then
+      return ec
+    end
+    C.ERR_clear_error()
+    local p = C.EVP_PKEY_get0(ctx)
+    if p ~= nil then
+      return ffi_cast("EC_KEY*", p)
+    end
+    C.ERR_clear_error()
+    return nil
+  end
+end
 
 local load_rsa_key_funcs
 
@@ -198,16 +216,27 @@ local function _pctx_ctrl_str(pctx, opts)
     return nil, format_error("EVP_PKEY_CTX_set_rsa_pss_saltlen")
   end
 
+  if opts.distid then
+    if pkey_macro.EVP_PKEY_CTX_set1_id(pctx, opts.distid) <= 0 then
+      return nil, format_error("EVP_PKEY_CTX_set1_id")
+    end
+  end
 
   for _, c in ipairs(opts) do
     if type(c) == "string" then
-      local k, v = string.match(c, "([_%w]+):([_%w]+)")
+      local k, v = string.match(c, "^([^:]+):(.*)$")
       if not k or not v then
         return nil, "unknown ctrl str: ".. c
       end
 
-      if C.EVP_PKEY_CTX_ctrl_str(pctx, k, v) ~= 1 then
-        return nil, format_error(string.format('EVP_PKEY_CTX_ctrl_str(%s, "%s", "%s")', pctx, k, v))
+      if k == "distid" then
+        if pkey_macro.EVP_PKEY_CTX_set1_id(pctx, v) <= 0 then
+          return nil, format_error("EVP_PKEY_CTX_set1_id")
+        end
+      else
+        if C.EVP_PKEY_CTX_ctrl_str(pctx, k, v) ~= 1 then
+          return nil, format_error(string.format('EVP_PKEY_CTX_ctrl_str(%s, "%s", "%s")', pctx, k, v))
+        end
       end
     end
   end
@@ -251,7 +280,8 @@ local function generate_param(key_type, config)
 
   if key_type == evp_macro.EVP_PKEY_EC then
     local curve = config.curve or 'prime192v1'
-    local nid = C.OBJ_ln2nid(curve)
+    local nid = C.OBJ_txt2nid(curve)
+    C.ERR_clear_error()
     if nid == 0 then
       return nil, "unknown curve " .. curve
     end
@@ -314,6 +344,9 @@ local load_param_funcs = {
 
 local function generate_key(config)
   local typ = config.type or 'RSA'
+  if typ == "EC" and type(config.curve) == "string" and (config.curve:upper() == "SM2" or config.curve == "1.2.156.10197.1.301") then
+    typ = "SM2"
+  end
   local key_type, pctx
 
   if typ == "RSA" then
@@ -328,6 +361,12 @@ local function generate_key(config)
     if pctx == nil then
       return nil, format_error("EVP_PKEY_CTX_new_from_name")
     end
+  elseif typ == "SM2" then
+    if legacy_type_nids.SM2 == 0 then
+      return nil, "the linked OpenSSL library doesn't support SM2 key"
+    end
+    key_type = evp_macro.EVP_PKEY_EC
+    config.curve = config.curve or "SM2"
   elseif evp_macro.ecx_curves[typ] then
     key_type = evp_macro.ecx_curves[typ]
   else
@@ -422,6 +461,13 @@ local function generate_key(config)
   -- TODO: move to use EVP_PKEY_gen after drop support for <1.1.1
   if C.EVP_PKEY_keygen(pctx, ctx_ptr) ~= 1 then
     return nil, format_error("EVP_PKEY_gen")
+  end
+  if not OPENSSL_3_UP and typ == "SM2" then
+    if C.EVP_PKEY_set_alias_type(ctx_ptr[0], legacy_type_nids.SM2) ~= 1 then
+      local alias_err = format_error("EVP_PKEY_set_alias_type")
+      C.EVP_PKEY_free(ctx_ptr[0])
+      return nil, alias_err
+    end
   end
   return ctx_ptr[0]
 end
@@ -640,6 +686,19 @@ function _M.new(s, opts)
     if key_type == 0 then
       return nil, "pkey.new: cannot get key_type"
     end
+    if key_type == evp_macro.EVP_PKEY_EC and legacy_type_nids.SM2 ~= 0 then
+      local ec = C.EVP_PKEY_get0(ctx)
+      if ec ~= nil then
+        ec = ffi_cast("EC_KEY*", ec)
+        local grp = C.EC_KEY_get0_group(ec)
+        if grp ~= nil and C.EC_GROUP_get_curve_name(grp) == legacy_type_nids.SM2 then
+          if C.EVP_PKEY_set_alias_type(ctx, legacy_type_nids.SM2) ~= 1 then
+            return nil, "pkey.new: failed to set SM2 alias type"
+          end
+          key_type = legacy_type_nids.SM2
+        end
+      end
+    end
   end
   local raw_key_lib
   if not legacy_nids[key_type] then
@@ -715,12 +774,15 @@ function _M:get_parameters()
     end
     local key = getter(self.ctx)
     if key == nil then
+      if OPENSSL_3_UP and self.key_type == legacy_type_nids.SM2 then
+        return ec_lib.get_provider_parameters(self.ctx)
+      end
       return nil, format_error("EVP_PKEY_get0_{key}")
     end
 
     if self.key_type == evp_macro.EVP_PKEY_RSA then
       return rsa_lib.get_parameters(key)
-    elseif self.key_type == evp_macro.EVP_PKEY_EC then
+    elseif self.key_type == evp_macro.EVP_PKEY_EC or self.key_type == legacy_type_nids.SM2 then
       return ec_lib.get_parameters(key)
     elseif self.key_type == evp_macro.EVP_PKEY_DH then
       return dh_lib.get_parameters(key)
@@ -738,12 +800,15 @@ function _M:set_parameters(opts)
     end
     local key = getter(self.ctx)
     if key == nil then
+      if OPENSSL_3_UP and self.key_type == legacy_type_nids.SM2 then
+        return nil, "pkey:set_parameters: cannot extract EC_KEY from SM2 key"
+      end
       return nil, format_error("EVP_PKEY_get0_{key}")
     end
 
     if self.key_type == evp_macro.EVP_PKEY_RSA then
       return rsa_lib.set_parameters(key, opts)
-    elseif self.key_type == evp_macro.EVP_PKEY_EC then
+    elseif self.key_type == evp_macro.EVP_PKEY_EC or self.key_type == legacy_type_nids.SM2 then
       return ec_lib.set_parameters(key, opts)
     elseif self.key_type == evp_macro.EVP_PKEY_DH then
       return dh_lib.set_parameters(key, opts)
@@ -854,7 +919,7 @@ local function asymmetric_routine(self, s, op, padding, opts)
   end
 
   -- EVP_PKEY_CTX_ctrl must be called after *_init
-  if self.key_type == evp_macro.EVP_PKEY_RSA and padding and 
+  if self.key_type == evp_macro.EVP_PKEY_RSA and padding and
       pkey_macro.EVP_PKEY_CTX_set_rsa_padding(pkey_ctx, padding) ~= 1 then
     return nil, format_error("pkey:asymmetric_routine EVP_PKEY_CTX_set_rsa_padding")
   end
@@ -869,6 +934,15 @@ local function asymmetric_routine(self, s, op, padding, opts)
     buf = opts.buf_in
     buf_len = #buf
   else
+    local req_len = ptr_of_size_t()
+    code = f(pkey_ctx, nil, req_len, s, #s)
+    if code <= 0 then
+      return nil, format_error("pkey:asymmetric_routine EVP_PKEY_" .. op_name, code)
+    end
+    if req_len[0] > self.buf_size then
+      self.buf = ctypes.uchar_array(req_len[0])
+      self.buf_size = req_len[0]
+    end
     buf = self.buf
     buf_len = ptr_of_size_t(self.buf_size)
   end
@@ -940,22 +1014,49 @@ local function sign_verify_prepare(self, fint, md_alg, padding, opts)
   end
 
   local ppkey_ctx = evp_pkey_ctx_ptr_ptr_ct()
+  local pre_pctx
+  if not OPENSSL_3_UP and self.key_type == legacy_type_nids.SM2 then
+    pre_pctx = C.EVP_PKEY_CTX_new(self.ctx, nil)
+    if pre_pctx == nil then
+      return nil, format_error("pkey:sign_verify_prepare: EVP_PKEY_CTX_new failed")
+    end
+    ffi_gc(pre_pctx, C.EVP_PKEY_CTX_free)
+
+    if pkey_macro.EVP_PKEY_CTX_set1_id(pre_pctx, SM2_DEFAULT_DISTID) <= 0 then
+      return nil, format_error("pkey:sign_verify_prepare: EVP_PKEY_CTX_set1_id")
+    end
+
+    local ok, err = _pctx_ctrl_str(pre_pctx, opts)
+    if not ok then
+      return nil, "pkey:sign_verify_prepare: " .. err
+    end
+
+    C.EVP_MD_CTX_set_pkey_ctx(md_ctx, pre_pctx)
+  end
+
   if fint(md_ctx, ppkey_ctx, algo, nil, self.ctx) ~= 1 then
     return nil, format_error("pkey:sign_verify_prepare: Init failed")
   end
 
-  -- EVP_PKEY_CTX_ctrl must be called after *_init
-  if self.key_type == evp_macro.EVP_PKEY_RSA and padding and 
-      pkey_macro.EVP_PKEY_CTX_set_rsa_padding(ppkey_ctx[0], padding) ~= 1 then
-    return nil, format_error("pkey:sign_verify_prepare EVP_PKEY_CTX_set_rsa_padding")
+  if not pre_pctx then
+    -- EVP_PKEY_CTX_ctrl must be called after *_init
+    if self.key_type == evp_macro.EVP_PKEY_RSA and padding and
+        pkey_macro.EVP_PKEY_CTX_set_rsa_padding(ppkey_ctx[0], padding) ~= 1 then
+      return nil, format_error("pkey:sign_verify_prepare EVP_PKEY_CTX_set_rsa_padding")
+    end
+
+    if self.key_type == legacy_type_nids.SM2 and
+        pkey_macro.EVP_PKEY_CTX_set1_id(ppkey_ctx[0], SM2_DEFAULT_DISTID) <= 0 then
+      return nil, format_error("pkey:sign_verify_prepare: EVP_PKEY_CTX_set1_id")
+    end
+
+    local ok, err = _pctx_ctrl_str(ppkey_ctx[0], opts)
+    if not ok then
+      return nil, "pkey:sign_verify_prepare: " .. err
+    end
   end
 
-  local ok, err = _pctx_ctrl_str(ppkey_ctx[0], opts)
-  if not ok then
-    return nil, "pkey:sign_verify_prepare: " .. err
-  end
-
-  return md_ctx
+  return md_ctx, nil, pre_pctx
 end
 
 function _M:sign(digest, md_alg, padding, opts)
@@ -973,7 +1074,7 @@ function _M:sign(digest, md_alg, padding, opts)
     end
     ret = ffi_str(self.buf, length[0])
   elseif type(digest) == "string" then
-    local md_ctx, err = sign_verify_prepare(self, C.EVP_DigestSignInit, md_alg, padding, opts)
+    local md_ctx, err, pre_pctx = sign_verify_prepare(self, C.EVP_DigestSignInit, md_alg, padding, opts)
     if err then
       return nil, err
     end
@@ -987,10 +1088,9 @@ function _M:sign(digest, md_alg, padding, opts)
     return nil, "pkey:sign: expect a digest instance or a string at #1"
   end
 
-  if self.key_type == evp_macro.EVP_PKEY_EC and opts and opts.ecdsa_use_raw then
-    local ec_key = get_pkey_key[evp_macro.EVP_PKEY_EC](self.ctx)
-
-    ret, err = ecdsa_util.sig_der2raw(ret, ec_key)
+  if (self.key_type == evp_macro.EVP_PKEY_EC or self.key_type == legacy_type_nids.SM2) and opts and opts.ecdsa_use_raw then
+    local bits = OPENSSL_3_UP and C.EVP_PKEY_get_bits(self.ctx) or C.EVP_PKEY_bits(self.ctx)
+    ret, err = ecdsa_util.sig_der2raw(ret, nil, bits)
     if err then
       return nil, "pkey:sign: ecdsa.sig_der2raw: " .. err
     end
@@ -1005,12 +1105,11 @@ function _M:verify(signature, digest, md_alg, padding, opts)
   end
   local err
 
-  if self.key_type == evp_macro.EVP_PKEY_EC and opts and opts.ecdsa_use_raw then
-    local ec_key = get_pkey_key[evp_macro.EVP_PKEY_EC](self.ctx)
-
-    signature, err = ecdsa_util.sig_raw2der(signature, ec_key)
+  if (self.key_type == evp_macro.EVP_PKEY_EC or self.key_type == legacy_type_nids.SM2) and opts and opts.ecdsa_use_raw then
+    local bits = OPENSSL_3_UP and C.EVP_PKEY_get_bits(self.ctx) or C.EVP_PKEY_bits(self.ctx)
+    signature, err = ecdsa_util.sig_raw2der(signature, nil, bits)
     if err then
-      return nil, "pkey:sign: ecdsa.sig_raw2der: " .. err
+      return nil, "pkey:verify: ecdsa.sig_raw2der: " .. err
     end
   end
 
@@ -1018,7 +1117,7 @@ function _M:verify(signature, digest, md_alg, padding, opts)
   if digest_lib.istype(digest) then
     code = C.EVP_VerifyFinal(digest.ctx, signature, #signature, self.ctx)
   elseif type(digest) == "string" then
-    local md_ctx, err = sign_verify_prepare(self, C.EVP_DigestVerifyInit, md_alg, padding, opts)
+    local md_ctx, err, pre_pctx = sign_verify_prepare(self, C.EVP_DigestVerifyInit, md_alg, padding, opts)
     if err then
       return nil, err
     end
