@@ -2015,7 +2015,9 @@ SecP256r1MLKEM768 192
     location =/t {
         content_by_lua_block {
             local pkey = require("resty.openssl.pkey")
-            local k = myassert(pkey.new({ type = "SM2" }))
+            local config = { type = "SM2" }
+            local k = myassert(pkey.new(config))
+            ngx.say(config.curve == nil)
             local kt = k:get_key_type()
             ngx.say(kt and (kt.sn == "SM2" or kt.nid == 1172))
 
@@ -2033,6 +2035,9 @@ SecP256r1MLKEM768 192
             local pub_params = myassert(pub:get_parameters())
             local private_params = myassert(k:get_parameters())
             local bn = require("resty.openssl.bn")
+            local openssl3 = require("resty.openssl.version").OPENSSL_3_UP
+            ngx.say(not openssl3 or pub_params ~= private_params)
+            ngx.say(not openssl3 or pub_params.private == nil)
             ngx.say(bn.istype(pub_params.public))
             ngx.say(pub_params.group == 1172)
             ngx.say(pub_params.public == private_params.public and
@@ -2040,11 +2045,28 @@ SecP256r1MLKEM768 192
                     pub_params.y == private_params.y)
             ngx.say(not myassert(pub:is_private()))
             ngx.say(myassert(k:is_private()))
+            local has_raw_fields = false
+            for _ in pairs(pub_params) do
+                has_raw_fields = true
+            end
+            ngx.say(not has_raw_fields)
+            if openssl3 then
+                pub = nil
+                collectgarbage("collect")
+                ngx.say(bn.istype(pub_params.x))
+            else
+                ngx.say(true)
+            end
         }
     }
 --- request
     GET /t
 --- response_body
+true
+true
+true
+true
+true
 true
 true
 true
@@ -2131,11 +2153,16 @@ true
             local sig_array = myassert(k:sign(msg, "sm3", nil, { "distid:" .. array_id }))
             local ok_array = myassert(pub:verify(sig_array, msg, "sm3", nil, { "distid:" .. array_id }))
             ngx.say(ok_array == true)
+
+            -- Preserve validation errors that don't originate in OpenSSL
+            local _, type_err = k:sign(msg, "sm3", nil, { distid = 123 })
+            ngx.say(type_err == "pkey:sign_verify_prepare: id must be a string")
         }
     }
 --- request
     GET /t
 --- response_body
+true
 true
 true
 true

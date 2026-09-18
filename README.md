@@ -1285,6 +1285,11 @@ OpenSSL versions do not consistently choose the same implicit SM2 ID. Set
 implementation. In particular, pass the matching `-sigopt distid:...` option
 to the OpenSSL CLI.
 
+Upstream OpenSSL 1.1.1k and earlier are affected by the SM2 decryption buffer
+overflow described in [CVE-2021-3711](https://www.openssl.org/news/secadv/20210824.txt).
+Use OpenSSL 1.1.1l or later, or a vendor build with that fix backported, when
+decrypting untrusted SM2 ciphertext.
+
 It's also possible to pass raw pkeyopt control strings as used in the `pkeyutl` CLI program. This lets users pass in options that
 are not explicitly supported as parameters above.
 See [openssl-pkeyutl(1)](https://www.openssl.org/docs/manmaster/man1/openssl-pkeyutl.html) for a list of options.

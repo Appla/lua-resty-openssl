@@ -199,6 +199,14 @@ local function load_pem_der(txt, opts, funcs)
   return ctx, nil
 end
 
+local function _set_distid(pctx, id)
+  local code, err = pkey_macro.EVP_PKEY_CTX_set1_id(pctx, id)
+  if code <= 0 then
+    return nil, err or format_error("EVP_PKEY_CTX_set1_id")
+  end
+  return true
+end
+
 local function _pctx_ctrl_str(pctx, opts)
   if not opts then
     return true
@@ -216,9 +224,10 @@ local function _pctx_ctrl_str(pctx, opts)
     return nil, format_error("EVP_PKEY_CTX_set_rsa_pss_saltlen")
   end
 
-  if opts.distid then
-    if pkey_macro.EVP_PKEY_CTX_set1_id(pctx, opts.distid) <= 0 then
-      return nil, format_error("EVP_PKEY_CTX_set1_id")
+  if opts.distid ~= nil then
+    local ok, err = _set_distid(pctx, opts.distid)
+    if not ok then
+      return nil, err
     end
   end
 
@@ -230,8 +239,9 @@ local function _pctx_ctrl_str(pctx, opts)
       end
 
       if k == "distid" then
-        if pkey_macro.EVP_PKEY_CTX_set1_id(pctx, v) <= 0 then
-          return nil, format_error("EVP_PKEY_CTX_set1_id")
+        local ok, err = _set_distid(pctx, v)
+        if not ok then
+          return nil, err
         end
       else
         if C.EVP_PKEY_CTX_ctrl_str(pctx, k, v) ~= 1 then
@@ -244,7 +254,7 @@ local function _pctx_ctrl_str(pctx, opts)
 end
 
 
-local function generate_param(key_type, config)
+local function generate_param(key_type, config, default_curve)
   if key_type == evp_macro.EVP_PKEY_DH then
     local dh_group = config.group
     if dh_group then
@@ -279,7 +289,7 @@ local function generate_param(key_type, config)
   end
 
   if key_type == evp_macro.EVP_PKEY_EC then
-    local curve = config.curve or 'prime192v1'
+    local curve = config.curve or default_curve or 'prime192v1'
     local nid = C.OBJ_txt2nid(curve)
     C.ERR_clear_error()
     if nid == 0 then
@@ -366,7 +376,6 @@ local function generate_key(config)
       return nil, "the linked OpenSSL library doesn't support SM2 key"
     end
     key_type = evp_macro.EVP_PKEY_EC
-    config.curve = config.curve or "SM2"
   elseif evp_macro.ecx_curves[typ] then
     key_type = evp_macro.ecx_curves[typ]
   else
@@ -406,7 +415,8 @@ local function generate_key(config)
         return nil, format_error("EVP_PKEY_assign")
       end
     else
-      params, err = generate_param(key_type, config)
+      params, err = generate_param(key_type, config,
+                                   typ == "SM2" and "SM2" or nil)
       if err then
         return nil, "generate_param: " .. err
       end

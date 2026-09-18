@@ -80,24 +80,23 @@ function _M.get_parameters(ec_key_st)
   }), nil
 end
 
-do
-  local provider_params_mt = {
-    __index = function(self, k)
-      local evp_pkey_st = self._evp_pkey_st
-      if not evp_pkey_st then
-        return nil, "ec.get_provider_parameters: EVP_PKEY is required"
-      end
+function _M.get_provider_parameters(evp_pkey_st)
+  if evp_pkey_st == nil then
+    return nil, "ec.get_provider_parameters: EVP_PKEY is required"
+  end
+  return setmetatable({}, {
+    __index = function(_, k)
       if k == "group" then
         local length = ctypes.ptr_of_size_t()
         if C.EVP_PKEY_get_utf8_string_param(evp_pkey_st, "group",
-                                              nil, 0, length) ~= 1 then
+                                            nil, 0, length) ~= 1 then
           C.ERR_clear_error()
           return nil
         end
 
         local buf = ffi_new("char[?]", length[0] + 1)
         if C.EVP_PKEY_get_utf8_string_param(evp_pkey_st, "group", buf,
-                                              length[0] + 1, length) ~= 1 then
+                                            length[0] + 1, length) ~= 1 then
           C.ERR_clear_error()
           return nil
         end
@@ -108,11 +107,11 @@ do
         local length = ctypes.ptr_of_size_t()
         local param_name = "pub"
         if C.EVP_PKEY_get_octet_string_param(evp_pkey_st, param_name,
-                                              nil, 0, length) ~= 1 then
+                                             nil, 0, length) ~= 1 then
           C.ERR_clear_error()
           param_name = "encoded-pub-key"
           if C.EVP_PKEY_get_octet_string_param(evp_pkey_st, param_name,
-                                                nil, 0, length) ~= 1 then
+                                               nil, 0, length) ~= 1 then
             C.ERR_clear_error()
             return nil
           end
@@ -120,7 +119,7 @@ do
 
         local buf = ctypes.uchar_array(length[0])
         if C.EVP_PKEY_get_octet_string_param(evp_pkey_st, param_name, buf,
-                                              length[0], length) ~= 1 then
+                                             length[0], length) ~= 1 then
           C.ERR_clear_error()
           return nil
         end
@@ -148,12 +147,8 @@ do
       local value, err = bn_lib.dup(bn_ptr[0])
       C.BN_free(bn_ptr[0])
       return value, err
-    end
-  }
-
-  function _M.get_provider_parameters(evp_pkey_st)
-    return setmetatable({ _evp_pkey_st = evp_pkey_st }, provider_params_mt), nil
-  end
+    end,
+  }), nil
 end
 
 function _M.set_parameters(ec_key_st, opts)
